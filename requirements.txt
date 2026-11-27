@@ -1,0 +1,9 @@
+flask
+requests
+polyline
+python-dotenv
+joblib
+pandas
+numpy
+scikit-learn
+lightgbm

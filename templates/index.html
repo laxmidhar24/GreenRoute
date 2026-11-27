@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>GreenRoute | AI-Based Eco Navigation</title>
+<style>
+  body { font-family: Segoe UI, Arial, sans-serif; margin: 0; padding: 16px; background: #f7faf7; }
+  h2 { text-align: center; color: #2e7d32; }
+  #controls { display: flex; gap: 8px; justify-content: center; margin-bottom: 12px; flex-wrap: wrap; }
+  input, select, button { padding: 8px 10px; border: 1px solid #bbb; border-radius: 6px; }
+  button { background: #2e9d4f; color: #fff; border: none; cursor: pointer; }
+  #map { height: 480px; width: 100%; border-radius: 8px; }
+  #acoSummary { display: none; margin: 14px 0; padding: 10px 16px; background: #fff; border-left: 4px solid #2e9d4f; }
+  table { width: 100%; border-collapse: collapse; background: #fff; margin-top: 10px; }
+  th, td { padding: 8px; border-bottom: 1px solid #ddd; text-align: center; }
+  th { background: #eef5ee; }
+  tr.best { background: #b9f6ca; font-weight: 600; }
+  .aqi-badge { padding: 3px 8px; border-radius: 6px; color: #fff; font-size: 12px; }
+  .aqi-good { background: #2e9d4f; } .aqi-moderate { background: #f9a825; }
+  .aqi-unhealthy { background: #ef6c00; } .aqi-poor { background: #c62828; } .aqi-na { background: #777; }
+  #msg { text-align: center; color: #c62828; }
+</style>
+</head>
+<body>
+<h2>GreenRoute – AI-Based Eco Navigation</h2>
+
+<div id="controls">
+  <input id="origin" type="text" placeholder="Enter origin">
+  <input id="destination" type="text" placeholder="Enter destination">
+  <select id="vehicle">
+    <option value="car">Car</option>
+    <option value="bike">Bike</option>
+    <option value="bus">Bus</option>
+  </select>
+  <select id="fuel">
+    <option value="petrol">Petrol</option>
+    <option value="diesel">Diesel</option>
+    <option value="ev">Electric</option>
+  </select>
+  <button id="findRoute">Compare Routes</button>
+</div>
+<div id="msg"></div>
+<div id="map"></div>
+
+<div id="acoSummary">
+  <h3>Ant Colony Optimization (ACO) Result</h3>
+  <p><b>Optimized Distance:</b> <span id="acoDistance"></span> km</p>
+  <p><b>Emission:</b> <span id="acoEmission"></span> kg CO₂</p>
+  <p><b>Status:</b> <span id="acoStatus"></span></p>
+</div>
+
+<table id="routeTable" style="display:none;">
+  <thead><tr>
+    <th>Route</th><th>Distance (km)</th><th>Duration (min)</th><th>Traffic Delay (min)</th>
+    <th>Elevation Gain (m)</th><th>Emission (RF)</th><th>Emission (LGBM)</th><th>Air Quality (AQI)</th>
+  </tr></thead>
+  <tbody></tbody>
+</table>
+
+<script>
+let map, lines = [];
+
+function initMap() {
+  map = new google.maps.Map(document.getElementById("map"), {
+    zoom: 6, center: { lat: 20.5937, lng: 78.9629 }
+  });
+  document.getElementById("findRoute").addEventListener("click", compare);
+}
+
+function aqiBadge(aqi, cat) {
+  if (aqi === null || aqi === undefined) return '<span class="aqi-badge aqi-na">N/A</span>';
+  let cls = aqi <= 50 ? "aqi-good" : aqi <= 100 ? "aqi-moderate" : aqi <= 200 ? "aqi-unhealthy" : "aqi-poor";
+  return `<span class="aqi-badge ${cls}">${aqi} (${cat || ""})</span>`;
+}
+
+function clearLines() { lines.forEach(l => l.setMap(null)); lines = []; }
+
+async function compare() {
+  const msg = document.getElementById("msg");
+  msg.innerText = "";
+  const q = new URLSearchParams({
+    origin: document.getElementById("origin").value,
+    destination: document.getElementById("destination").value,
+    vehicle: document.getElementById("vehicle").value,
+    fuel: document.getElementById("fuel").value
+  });
+  if (!q.get("origin") || !q.get("destination")) { msg.innerText = "Enter origin and destination."; return; }
+
+  let data;
+  try {
+    const res = await fetch("/compare_routes?" + q.toString());
+    data = await res.json();
+  } catch (e) { msg.innerText = "Server error: " + e; return; }
+  if (data.error) { msg.innerText = data.error; return; }
+
+  clearLines();
+  const bounds = new google.maps.LatLngBounds();
+  const tbody = document.querySelector("#routeTable tbody");
+  tbody.innerHTML = "";
+
+  data.routes.forEach(r => {
+    const isBest = r.route_index === data.best_route_index;
+    const path = google.maps.geometry.encoding.decodePath(r.polyline);
+    path.forEach(p => bounds.extend(p));
+    lines.push(new google.maps.Polyline({
+      path, map, strokeColor: isBest ? "#2e9d4f" : "#888888",
+      strokeOpacity: 0.8, strokeWeight: isBest ? 6 : 4
+    }));
+    const delay = (r.duration_traffic_min - r.duration_min).toFixed(1);
+    tbody.insertAdjacentHTML("beforeend", `
+      <tr class="${isBest ? "best" : ""}">
+        <td>${isBest ? "Best ML Route" : "Route " + r.route_index}</td>
+        <td>${r.distance_km}</td><td>${r.duration_min}</td><td>${delay}</td>
+        <td>${r.elevation_gain_m}</td><td>${r.rf_emission} kg</td><td>${r.lgbm_emission} kg</td>
+        <td>${aqiBadge(r.aqi, r.aqi_category)}</td>
+      </tr>`);
+  });
+  document.getElementById("routeTable").style.display = "table";
+
+  const aco = data.aco_route;
+  const box = document.getElementById("acoSummary");
+  box.style.display = "block";
+  if (aco && aco.polyline) {
+    lines.push(new google.maps.Polyline({
+      path: google.maps.geometry.encoding.decodePath(aco.polyline), map,
+      strokeColor: "#800080", strokeOpacity: 0.9, strokeWeight: 6, zIndex: 10
+    }));
+    document.getElementById("acoDistance").innerText = aco.distance_km ?? "N/A";
+    document.getElementById("acoEmission").innerText = aco.emission_kgco2 ?? "N/A";
+    document.getElementById("acoStatus").innerText = data.aco_better_than_lgbm
+      ? "ACO found a more eco-friendly route" : "ACO route emission ≈ ML best route";
+  } else {
+    document.getElementById("acoDistance").innerText = "N/A";
+    document.getElementById("acoEmission").innerText = "N/A";
+    document.getElementById("acoStatus").innerText = "ACO could not find an optimized route.";
+  }
+  map.fitBounds(bounds);
+}
+window.initMap = initMap;
+</script>
+<script async src="https://maps.googleapis.com/maps/api/js?key={{ MAPS_API_KEY }}&libraries=places,geometry&callback=initMap"></script>
+</body>
+</html>
